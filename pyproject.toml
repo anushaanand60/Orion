@@ -1,0 +1,14 @@
+[project]
+name = "orion"
+version = "0.1.0"
+dependencies = [
+    "fastapi>=0.111.0,<0.112.0",
+    "uvicorn[standard]>=0.30.1,<0.31.0",
+    "pydantic-settings>=2.3.3,<2.4.0",
+    "pytest>=8.2.2,<9.0.0",
+    "httpx>=0.27.0,<0.28.0"
+]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
