@@ -2,6 +2,8 @@ FROM python:3.12-slim
 
 WORKDIR /code
 
+RUN pip install --no-cache-dir setuptools
+
 COPY pyproject.toml /code/
 
 RUN mkdir -p orion && touch orion/__init__.py
