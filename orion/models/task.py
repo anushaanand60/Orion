@@ -17,6 +17,8 @@ class Task(Base):
     id:Mapped[uuid.UUID]=mapped_column(primary_key=True, default=uuid.uuid4)
     status:Mapped[TaskStatus]=mapped_column(SQLEnum(TaskStatus, native_enum=False), default=TaskStatus.PENDING)
     task_type:Mapped[str]=mapped_column()
+    retry_count:Mapped[int]=mapped_column(default=0, server_default="0")
+    max_retries:Mapped[int]=mapped_column(default=3, server_default="3")
     payload:Mapped[Dict[str, Any]]=mapped_column(type_=JSON)
     result:Mapped[Optional[Dict[str, Any]]]=mapped_column(type_=JSON, nullable=True)
     created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True), server_default=func.now())

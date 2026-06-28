@@ -7,6 +7,7 @@ from orion.models.task import TaskStatus
 class TaskCreate(BaseModel):
     task_type:str
     payload:Dict[str, Any]
+    max_retries:Optional[int]=3
 
 class TaskResponse(BaseModel):
     id:uuid.UUID
@@ -17,5 +18,7 @@ class TaskDetailResponse(TaskResponse):
     task_type:str
     payload:Dict[str, Any]
     result:Optional[Dict[str, Any]]
+    retry_count:int
+    max_retries:int
     created_at:datetime
     updated_at:datetime

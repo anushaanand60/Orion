@@ -17,6 +17,7 @@ async def create_task(task_in:TaskCreate, db:AsyncSession=Depends(get_db)):
         status="pending",
         task_type=task_in.task_type,
         payload=task_in.payload,
+        max_retries=task_in.max_retries,
         result=None
     )
     db.add(task)

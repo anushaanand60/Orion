@@ -14,22 +14,32 @@ async def process_task(task_id:str):
             return
         task.status=TaskStatus.RUNNING
         await db.commit()
-        await db.refresh(task)
-        if task.task_type=="echo":
-            task.status=TaskStatus.COMPLETED
-            task.result=task.payload
-        elif task.task_type=="sum":
-            payload=task.payload
-            if "numbers" in payload and isinstance(payload["numbers"], list) and all(isinstance(n, (int, float)) for n in payload["numbers"]):
+        try:
+            if task.task_type=="echo":
                 task.status=TaskStatus.COMPLETED
-                task.result={"sum":sum(payload["numbers"])}
+                task.result=task.payload
+            elif task.task_type=="sum":
+                numbers=task.payload.get("numbers")
+                if isinstance(numbers, list) and all(isinstance(n, (int, float)) for n in numbers):
+                    task.status=TaskStatus.COMPLETED
+                    task.result={"sum":sum(numbers)}
+                else:
+                    raise ValueError("Payload must contain a list of numbers under 'numbers' key")
+            elif task.task_type=="fail":
+                raise RuntimeError("Simulated failure")
+            else:
+                raise ValueError(f"Unknown task type: {task.task_type}")
+            await db.commit()
+        except Exception as e:
+            task.retry_count+=1
+            if task.retry_count<=task.max_retries:
+                task.status=TaskStatus.PENDING
+                await db.commit()
+                await redis.rpush(settings.queue_name, str(task.id))
             else:
                 task.status=TaskStatus.FAILED
-                task.result={"error":"Payload must contain a list of numbers under 'numbers' key"}
-        else:
-            task.status=TaskStatus.FAILED
-            task.result={"error":f"Unknown task type: {task.task_type}"}
-        await db.commit()
+                task.result={"error":str(e)}
+                await db.commit()
 
 async def main():
     while True:

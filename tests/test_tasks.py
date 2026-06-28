@@ -41,6 +41,8 @@ async def test_create_task():
     assert str(db_task.id)==task_id
     assert db_task.status=="pending"
     assert db_task.task_type=="echo"
+    assert db_task.retry_count==0
+    assert db_task.max_retries==3
     assert db_task.payload==payload
     assert db_task.result is None
 
@@ -59,6 +61,8 @@ async def test_get_task_success():
         assert data["id"]==task_id
         assert data["status"]=="pending"
         assert data["task_type"]=="echo"
+        assert data["retry_count"]==0
+        assert data["max_retries"]==3
         assert data["payload"]==payload
         assert data["result"] is None
         assert "created_at" in data
@@ -154,6 +158,29 @@ async def test_background_task_unknown_type_failure():
             if data["status"]=="failed":
                 finished=True
                 assert data["result"]=={"error":"Unknown task type: unknown_type"}
+                break
+            await asyncio.sleep(0.1)
+        assert finished is True
+
+@pytest.mark.anyio
+async def test_background_task_retry_exhausted_failure():
+    payload={}
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        create_res=await ac.post("/tasks", json={"task_type":"fail","max_retries":2,"payload":payload})
+        assert create_res.status_code==201
+        task_id=create_res.json()["id"]
+
+        finished=False
+        for _ in range(20):
+            get_res=await ac.get(f"/tasks/{task_id}")
+            assert get_res.status_code==200
+            data=get_res.json()
+            if data["status"]=="failed":
+                finished=True
+                assert data["retry_count"]==3
+                assert data["max_retries"]==2
+                assert data["result"]=={"error":"Simulated failure"}
                 break
             await asyncio.sleep(0.1)
         assert finished is True
