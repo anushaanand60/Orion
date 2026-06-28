@@ -15,6 +15,7 @@ async def create_task(task_in:TaskCreate, db:AsyncSession=Depends(get_db)):
     task=Task(
         id=uuid.uuid4(),
         status="pending",
+        task_type=task_in.task_type,
         payload=task_in.payload,
         result=None
     )
@@ -22,7 +23,7 @@ async def create_task(task_in:TaskCreate, db:AsyncSession=Depends(get_db)):
     await db.commit()
     await db.refresh(task)
     await redis.rpush(settings.queue_name, str(task.id))
-    return TaskResponse(id=task.id, status=task.status)
+    return task
 
 @router.get("/tasks/{task_id}", response_model=TaskDetailResponse)
 async def get_task(task_id:uuid.UUID, db:AsyncSession=Depends(get_db)):
@@ -33,11 +34,4 @@ async def get_task(task_id:uuid.UUID, db:AsyncSession=Depends(get_db)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Task not found"
         )
-    return TaskDetailResponse(
-        id=task.id,
-        status=task.status,
-        payload=task.payload,
-        result=task.result,
-        created_at=task.created_at,
-        updated_at=task.updated_at
-    )
+    return task

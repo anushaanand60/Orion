@@ -26,7 +26,7 @@ async def test_create_task():
     payload={"foo":"bar"}
     transport=ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        response=await ac.post("/tasks", json={"payload":payload})
+        response=await ac.post("/tasks", json={"task_type":"echo","payload":payload})
     assert response.status_code==201
     data=response.json()
     assert "id" in data
@@ -34,12 +34,13 @@ async def test_create_task():
     task_id=data["id"]
 
     async with async_session() as session:
-        result=await session.execute(select(Task).where(Task.id==task_id))
+        result=await session.execute(select(Task).where(Task.id==uuid.UUID(task_id)))
         db_task=result.scalar_one_or_none()
 
     assert db_task is not None
     assert str(db_task.id)==task_id
     assert db_task.status=="pending"
+    assert db_task.task_type=="echo"
     assert db_task.payload==payload
     assert db_task.result is None
 
@@ -48,7 +49,7 @@ async def test_get_task_success():
     payload={"hello":"world"}
     transport=ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        create_res=await ac.post("/tasks", json={"payload":payload})
+        create_res=await ac.post("/tasks", json={"task_type":"echo","payload":payload})
         assert create_res.status_code==201
         task_id=create_res.json()["id"]
 
@@ -57,6 +58,7 @@ async def test_get_task_success():
         data=get_res.json()
         assert data["id"]==task_id
         assert data["status"]=="pending"
+        assert data["task_type"]=="echo"
         assert data["payload"]==payload
         assert data["result"] is None
         assert "created_at" in data
@@ -76,7 +78,7 @@ async def test_background_task_execution():
     payload={"test":"execution"}
     transport=ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        create_res=await ac.post("/tasks", json={"payload":payload})
+        create_res=await ac.post("/tasks", json={"task_type":"echo","payload":payload})
         assert create_res.status_code==201
         task_id=create_res.json()["id"]
 
@@ -87,7 +89,71 @@ async def test_background_task_execution():
             data=get_res.json()
             if data["status"]=="completed":
                 completed=True
-                assert data["result"]=={"message":"Task completed"}
+                assert data["task_type"]=="echo"
+                assert data["result"]==payload
                 break
             await asyncio.sleep(0.1)
         assert completed is True
+
+@pytest.mark.anyio
+async def test_background_task_sum_success():
+    payload={"numbers":[10,20,30]}
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        create_res=await ac.post("/tasks", json={"task_type":"sum","payload":payload})
+        assert create_res.status_code==201
+        task_id=create_res.json()["id"]
+
+        completed=False
+        for _ in range(20):
+            get_res=await ac.get(f"/tasks/{task_id}")
+            assert get_res.status_code==200
+            data=get_res.json()
+            if data["status"]=="completed":
+                completed=True
+                assert data["result"]=={"sum":60}
+                break
+            await asyncio.sleep(0.1)
+        assert completed is True
+
+@pytest.mark.anyio
+async def test_background_task_sum_invalid_payload():
+    payload={"numbers":"not-a-list"}
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        create_res=await ac.post("/tasks", json={"task_type":"sum","payload":payload})
+        assert create_res.status_code==201
+        task_id=create_res.json()["id"]
+
+        finished=False
+        for _ in range(20):
+            get_res=await ac.get(f"/tasks/{task_id}")
+            assert get_res.status_code==200
+            data=get_res.json()
+            if data["status"]=="failed":
+                finished=True
+                assert "error" in data["result"]
+                break
+            await asyncio.sleep(0.1)
+        assert finished is True
+
+@pytest.mark.anyio
+async def test_background_task_unknown_type_failure():
+    payload={"foo":"bar"}
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        create_res=await ac.post("/tasks", json={"task_type":"unknown_type","payload":payload})
+        assert create_res.status_code==201
+        task_id=create_res.json()["id"]
+
+        finished=False
+        for _ in range(20):
+            get_res=await ac.get(f"/tasks/{task_id}")
+            assert get_res.status_code==200
+            data=get_res.json()
+            if data["status"]=="failed":
+                finished=True
+                assert data["result"]=={"error":"Unknown task type: unknown_type"}
+                break
+            await asyncio.sleep(0.1)
+        assert finished is True
