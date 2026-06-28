@@ -13,6 +13,18 @@ services:
       - postgres
       - redis
 
+  worker:
+    build: .
+    volumes:
+      - .:/code
+    command: python -m orion.worker
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/orion
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - postgres
+      - redis
+
   postgres:
     image: postgres:16-alpine
     ports:

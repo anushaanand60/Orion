@@ -1,9 +1,12 @@
 import uuid
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from orion.config import settings
 from orion.database import get_db
 from orion.models.task import Task
-from orion.schemas.task import TaskCreate, TaskResponse
+from orion.redis import redis
+from orion.schemas.task import TaskCreate, TaskDetailResponse, TaskResponse
 
 router=APIRouter()
 
@@ -18,4 +21,23 @@ async def create_task(task_in:TaskCreate, db:AsyncSession=Depends(get_db)):
     db.add(task)
     await db.commit()
     await db.refresh(task)
+    await redis.rpush(settings.queue_name, str(task.id))
     return TaskResponse(id=task.id, status=task.status)
+
+@router.get("/tasks/{task_id}", response_model=TaskDetailResponse)
+async def get_task(task_id:uuid.UUID, db:AsyncSession=Depends(get_db)):
+    result=await db.execute(select(Task).where(Task.id==task_id))
+    task=result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Task not found"
+        )
+    return TaskDetailResponse(
+        id=task.id,
+        status=task.status,
+        payload=task.payload,
+        result=task.result,
+        created_at=task.created_at,
+        updated_at=task.updated_at
+    )

@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     port:int=8000
     database_url:str="postgresql+asyncpg://postgres:postgres@localhost:5432/orion"
     redis_url:str="redis://localhost:6379/0"
+    queue_name:str="orion:queue:default"
     model_config=SettingsConfigDict(env_file=".env")
 
 settings=Settings()
