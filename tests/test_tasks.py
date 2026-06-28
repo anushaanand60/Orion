@@ -212,11 +212,65 @@ async def test_concurrent_worker_execution():
             await asyncio.sleep(0.1)
         assert finished is True
 
-        queue_len=await redis.llen(settings.queue_name)
-        assert queue_len==0
+        high_len=await redis.llen(settings.high_queue_name)
+        default_len=await redis.llen(settings.default_queue_name)
+        low_len=await redis.llen(settings.low_queue_name)
+        assert high_len+default_len+low_len==0
 
         for task_id in task_ids:
             get_res=await ac.get(f"/tasks/{task_id}")
             data=get_res.json()
             assert data["status"]=="completed"
             assert data["retry_count"]==0
+
+@pytest.mark.anyio
+async def test_priority_queue_scheduling():
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        low_ids=[]
+        for i in range(3):
+            res=await ac.post("/tasks", json={
+                "task_type":"slow_echo",
+                "payload":{"idx":i,"delay":5},
+                "priority":"low"
+            })
+            assert res.status_code==201
+            low_ids.append(res.json()["id"])
+
+        res=await ac.post("/tasks", json={
+            "task_type":"echo",
+            "payload":{"priority_test":"high"},
+            "priority":"high"
+        })
+        assert res.status_code==201
+        high_id=res.json()["id"]
+
+        high_completed_while_lows_pending=False
+        for _ in range(60):
+            high_res=await ac.get(f"/tasks/{high_id}")
+            high_data=high_res.json()
+            if high_data["status"]=="completed":
+                low_statuses=[]
+                for task_id in low_ids:
+                    low_res=await ac.get(f"/tasks/{task_id}")
+                    low_statuses.append(low_res.json()["status"])
+                if any(s in ["pending","running"] for s in low_statuses):
+                    high_completed_while_lows_pending=True
+                break
+            await asyncio.sleep(0.2)
+
+        assert high_data["status"]=="completed"
+        assert high_completed_while_lows_pending is True
+
+        all_tasks_done=False
+        for _ in range(60):
+            terminal_count=0
+            for task_id in low_ids:
+                get_res=await ac.get(f"/tasks/{task_id}")
+                if get_res.json()["status"] in ["completed","failed"]:
+                    terminal_count+=1
+            if terminal_count==len(low_ids):
+                all_tasks_done=True
+                break
+            await asyncio.sleep(0.5)
+        assert all_tasks_done is True
