@@ -9,6 +9,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/orion
       - REDIS_URL=redis://redis:6379/0
+      - PYTHONUNBUFFERED=1
     depends_on:
       - postgres
       - redis
@@ -21,6 +22,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/orion
       - REDIS_URL=redis://redis:6379/0
+      - PYTHONUNBUFFERED=1
     depends_on:
       - postgres
       - redis

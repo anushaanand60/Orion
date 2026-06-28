@@ -47,10 +47,12 @@ async def process_task(task_id:str):
                 await db.commit()
 
 async def main():
+    print(f"Worker {settings.worker_name} starting...")
     while True:
         res=await redis.blpop(settings.queue_name, timeout=0)
         if res:
             _,task_id=res
+            print(f"Worker {settings.worker_name} processing task {task_id}")
             await process_task(task_id)
 
 if __name__=="__main__":

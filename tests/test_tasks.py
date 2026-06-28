@@ -186,3 +186,37 @@ async def test_background_task_retry_exhausted_failure():
                 break
             await asyncio.sleep(0.1)
         assert finished is True
+
+@pytest.mark.anyio
+async def test_concurrent_worker_execution():
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        task_ids=[]
+        for i in range(5):
+            res=await ac.post("/tasks", json={"task_type":"echo","payload":{"idx":i}})
+            assert res.status_code==201
+            task_ids.append(res.json()["id"])
+
+        finished=False
+        for _ in range(50):
+            terminal_count=0
+            for task_id in task_ids:
+                get_res=await ac.get(f"/tasks/{task_id}")
+                assert get_res.status_code==200
+                data=get_res.json()
+                if data["status"] in ["completed","failed"]:
+                    terminal_count+=1
+            if terminal_count==len(task_ids):
+                finished=True
+                break
+            await asyncio.sleep(0.1)
+        assert finished is True
+
+        queue_len=await redis.llen(settings.queue_name)
+        assert queue_len==0
+
+        for task_id in task_ids:
+            get_res=await ac.get(f"/tasks/{task_id}")
+            data=get_res.json()
+            assert data["status"]=="completed"
+            assert data["retry_count"]==0
