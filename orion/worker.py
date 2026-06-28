@@ -4,6 +4,7 @@ from sqlalchemy import select
 from orion.config import settings
 from orion.database import async_session
 from orion.models.task import Task, TaskStatus
+from orion.exceptions import PermanentTaskError, RetryableTaskError
 from orion.redis import redis
 
 async def process_task(task_id:str):
@@ -24,11 +25,15 @@ async def process_task(task_id:str):
                     task.status=TaskStatus.COMPLETED
                     task.result={"sum":sum(numbers)}
                 else:
-                    raise ValueError("Payload must contain a list of numbers under 'numbers' key")
+                    raise PermanentTaskError("Payload must contain a list of numbers under 'numbers' key")
             elif task.task_type=="fail":
-                raise RuntimeError("Simulated failure")
+                raise RetryableTaskError("Simulated failure")
             else:
-                raise ValueError(f"Unknown task type: {task.task_type}")
+                raise PermanentTaskError(f"Unknown task type: {task.task_type}")
+            await db.commit()
+        except PermanentTaskError as e:
+            task.status=TaskStatus.FAILED
+            task.result={"error":str(e)}
             await db.commit()
         except Exception as e:
             task.retry_count+=1

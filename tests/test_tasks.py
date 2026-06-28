@@ -137,6 +137,7 @@ async def test_background_task_sum_invalid_payload():
             if data["status"]=="failed":
                 finished=True
                 assert "error" in data["result"]
+                assert data["retry_count"]==0
                 break
             await asyncio.sleep(0.1)
         assert finished is True
@@ -158,6 +159,7 @@ async def test_background_task_unknown_type_failure():
             if data["status"]=="failed":
                 finished=True
                 assert data["result"]=={"error":"Unknown task type: unknown_type"}
+                assert data["retry_count"]==0
                 break
             await asyncio.sleep(0.1)
         assert finished is True
