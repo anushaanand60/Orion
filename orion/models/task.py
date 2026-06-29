@@ -1,10 +1,13 @@
 import uuid
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
 from sqlalchemy import DateTime, Enum as SQLEnum, JSON, func, Table, Column, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from orion.models.base import Base
 from orion.enums import TaskStatus, TaskPriority
+
+if TYPE_CHECKING:
+    from orion.models.task_event import TaskEvent
 
 task_dependencies=Table(
     "task_dependencies",
@@ -42,6 +45,13 @@ class Task(Base):
         primaryjoin="Task.id==task_dependencies.c.parent_task_id",
         secondaryjoin="Task.id==task_dependencies.c.child_task_id",
         back_populates="parents",
+    )
+
+    events:Mapped[list["TaskEvent"]]=relationship(
+        "TaskEvent",
+        back_populates="task",
+        order_by="TaskEvent.timestamp.asc()",
+        cascade="all, delete-orphan"
     )
 
     @property

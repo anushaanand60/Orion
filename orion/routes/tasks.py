@@ -8,13 +8,14 @@ from orion.config import settings
 from orion.database import get_db
 from orion.queue import get_queue_name
 from orion.models.task import Task
-from orion.enums import TaskStatus
+from orion.enums import TaskStatus, TaskEventType
+from orion.events import record_event
 from orion.redis import redis
 from orion.schemas.task import TaskCreate, TaskDetailResponse, TaskResponse
 
 router=APIRouter()
 
-@router.get("/dead-letter", response_model=List[TaskDetailResponse])
+@router.get("/dead-letter", response_model=List[TaskDetailResponse], tags=["Dead Letter"])
 async def get_dead_letter_tasks(db:AsyncSession=Depends(get_db)):
     task_ids=await redis.lrange(settings.dead_letter_queue_name, 0, -1)
     tasks=[]
@@ -29,7 +30,7 @@ async def get_dead_letter_tasks(db:AsyncSession=Depends(get_db)):
             tasks.append(task)
     return tasks
 
-@router.post("/tasks", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/tasks", response_model=TaskResponse, status_code=status.HTTP_201_CREATED, tags=["Tasks"])
 async def create_task(task_in:TaskCreate, db:AsyncSession=Depends(get_db)):
     parents=[]
     if task_in.dependencies:
@@ -59,6 +60,15 @@ async def create_task(task_in:TaskCreate, db:AsyncSession=Depends(get_db)):
         result=None
     )
     db.add(task)
+    await record_event(db, task.id, TaskEventType.TASK_CREATED)
+    if status_val==TaskStatus.BLOCKED:
+        await record_event(db, task.id, TaskEventType.TASK_BLOCKED)
+    else:
+        if task.scheduled_at is None:
+            await record_event(db, task.id, TaskEventType.TASK_ENQUEUED)
+        else:
+            await record_event(db, task.id, TaskEventType.TASK_SCHEDULED)
+
     await db.commit()
     await db.refresh(task)
     await db.refresh(task, ["parents"])
@@ -70,7 +80,7 @@ async def create_task(task_in:TaskCreate, db:AsyncSession=Depends(get_db)):
             await redis.zadd(settings.scheduled_queue_name, {str(task.id): task.scheduled_at.timestamp()})
     return task
 
-@router.get("/tasks/{task_id}", response_model=TaskDetailResponse)
+@router.get("/tasks/{task_id}", response_model=TaskDetailResponse, tags=["Tasks"])
 async def get_task(task_id:uuid.UUID, db:AsyncSession=Depends(get_db)):
     result=await db.execute(
         select(Task)

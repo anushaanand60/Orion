@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orion Operations Control Center</title>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-deep: #080710;
+            --bg-card: rgba(255, 255, 255, 0.03);
+            --bg-card-hover: rgba(255, 255, 255, 0.06);
+            --border-glow: rgba(255, 255, 255, 0.08);
+            --primary: #6366f1;
+            --primary-glow: rgba(99, 102, 241, 0.15);
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+        }
+        body {
+            background-color: var(--bg-deep);
+            color: var(--text-main);
+            font-family: 'Outfit', sans-serif;
+            margin: 0;
+            padding: 0;
+            overflow-x: hidden;
+        }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 40px;
+            background: rgba(8, 7, 16, 0.8);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border-glow);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        header h1 {
+            margin: 0;
+            font-size: 24px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        header h1 span {
+            color: var(--primary);
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+        .btn {
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-family: 'Outfit', sans-serif;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 0 15px var(--primary-glow);
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 0 25px var(--primary);
+        }
+        .btn:disabled {
+            background-color: var(--text-muted);
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+        /* Modal dialog styles */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(8px);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+        .modal-content {
+            background: #11101e;
+            border: 1px solid var(--border-glow);
+            border-radius: 16px;
+            padding: 30px;
+            width: 90%;
+            max-width: 700px;
+            max-height: 80vh;
+            overflow-y: auto;
+            position: relative;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+        .close-btn {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            font-size: 24px;
+            cursor: pointer;
+            color: var(--text-muted);
+        }
+        .close-btn:hover {
+            color: var(--text-main);
+        }
+        .benchmark-panel {
+            background: rgba(99, 102, 241, 0.08);
+            border: 1px solid var(--primary);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 30px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Orion <span>Operations Plane</span></h1>
+        <div>
+            <button class="btn" onclick="triggerBenchmark(this)">Run 100-Task Benchmark</button>
+        </div>
+    </header>
+    <div class="container">
+        <!-- Benchmark results card -->
+        <div id="benchmark-card" class="benchmark-panel">
+            <h3 style="margin-top: 0; color: #818cf8; display: flex; justify-content: space-between; align-items: center;">
+                <span>Benchmark Results</span>
+                <span style="font-size: 14px; font-weight: normal; color: var(--text-muted); cursor: pointer;" onclick="document.getElementById('benchmark-card').style.display='none'">Dismiss</span>
+            </h3>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 15px; text-align: center;">
+                <div style="background: rgba(0,0,0,0.2); padding: 10px; border-radius: 8px;">
+                    <div id="bench-tps" style="font-size: 20px; font-weight: 700; color: var(--success);">-</div>
+                    <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Throughput (TPS)</div>
+                </div>
+                <div style="background: rgba(0,0,0,0.2); padding: 10px; border-radius: 8px;">
+                    <div id="bench-time" style="font-size: 20px; font-weight: 700;">-</div>
+                    <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Duration</div>
+                </div>
+                <div style="background: rgba(0,0,0,0.2); padding: 10px; border-radius: 8px;">
+                    <div id="bench-avg" style="font-size: 20px; font-weight: 700;">-</div>
+                    <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Avg Latency</div>
+                </div>
+                <div style="background: rgba(0,0,0,0.2); padding: 10px; border-radius: 8px;">
+                    <div id="bench-median" style="font-size: 20px; font-weight: 700;">-</div>
+                    <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Median Latency</div>
+                </div>
+                <div style="background: rgba(0,0,0,0.2); padding: 10px; border-radius: 8px;">
+                    <div id="bench-p95" style="font-size: 20px; font-weight: 700; color: var(--warning);">-</div>
+                    <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">P95 Latency</div>
+                </div>
+                <div style="background: rgba(0,0,0,0.2); padding: 10px; border-radius: 8px;">
+                    <div id="bench-p99" style="font-size: 20px; font-weight: 700; color: var(--danger);">-</div>
+                    <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">P99 Latency</div>
+                </div>
+                <div style="background: rgba(0,0,0,0.2); padding: 10px; border-radius: 8px;">
+                    <div id="bench-range" style="font-size: 14px; font-weight: 700; padding-top: 4px;">-</div>
+                    <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Fastest / Slowest</div>
+                </div>
+            </div>
+        </div>
+
+        {% block content %}{% endblock %}
+    </div>
+
+    <!-- Details Modal -->
+    <div id="details-modal" class="modal" onclick="closeModal(event)">
+        <div class="modal-content" onclick="event.stopPropagation()">
+            <span class="close-btn" onclick="document.getElementById('details-modal').style.display='none'">&times;</span>
+            <div id="modal-body">Loading...</div>
+        </div>
+    </div>
+
+    <script>
+        function openTaskDetails(taskId) {
+            document.getElementById('details-modal').style.display = 'flex';
+            document.getElementById('modal-body').innerHTML = 'Loading task timeline and dependency DAG...';
+            htmx.ajax('GET', '/dashboard/tasks/' + taskId, '#modal-body');
+        }
+        function closeModal(event) {
+            document.getElementById('details-modal').style.display = 'none';
+        }
+        function triggerBenchmark(btn) {
+            btn.disabled = true;
+            btn.innerText = 'Running benchmark...';
+            
+            // Show benchmark panel with loading status
+            const panel = document.getElementById('benchmark-card');
+            panel.style.display = 'block';
+            document.getElementById('bench-tps').innerText = '...';
+            document.getElementById('bench-time').innerText = '...';
+            document.getElementById('bench-avg').innerText = '...';
+            document.getElementById('bench-median').innerText = '...';
+            document.getElementById('bench-p95').innerText = '...';
+            document.getElementById('bench-p99').innerText = '...';
+            document.getElementById('bench-range').innerText = 'Running...';
+
+            fetch('/dashboard/benchmark', {method: 'POST'})
+                .then(r => r.json())
+                .then(data => {
+                    btn.disabled = false;
+                    btn.innerText = 'Run 100-Task Benchmark';
+                    if (data.success) {
+                        document.getElementById('bench-tps').innerText = data.throughput_tps + ' TPS';
+                        document.getElementById('bench-time').innerText = data.elapsed_seconds + ' s';
+                        document.getElementById('bench-avg').innerText = data.avg_latency_ms + ' ms';
+                        document.getElementById('bench-median').innerText = data.median_latency_ms + ' ms';
+                        document.getElementById('bench-p95').innerText = data.p95_latency_ms + ' ms';
+                        document.getElementById('bench-p99').innerText = data.p99_latency_ms + ' ms';
+                        document.getElementById('bench-range').innerText = data.fastest_ms + 'ms / ' + data.slowest_ms + 'ms';
+                    } else {
+                        document.getElementById('bench-range').innerText = 'Timeout / Partial completion';
+                    }
+                })
+                .catch(err => {
+                    btn.disabled = false;
+                    btn.innerText = 'Run 100-Task Benchmark';
+                    document.getElementById('bench-range').innerText = 'Error: ' + err;
+                });
+        }
+    </script>
+</body>
+</html>

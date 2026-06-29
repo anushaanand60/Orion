@@ -986,3 +986,42 @@ async def test_priority_preserved_when_child_released():
                 break
             await asyncio.sleep(0.1)
         assert completed_low is True
+
+@pytest.mark.anyio
+async def test_task_events_recorded_during_lifecycle():
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        res=await ac.post("/tasks", json={
+            "task_type":"echo",
+            "payload":{"hello":"observability"}
+        })
+        assert res.status_code==201
+        task_id=res.json()["id"]
+
+        # Wait for task completion
+        completed=False
+        for _ in range(20):
+            get_res=await ac.get(f"/tasks/{task_id}")
+            if get_res.json()["status"]=="completed":
+                completed=True
+                break
+            await asyncio.sleep(0.1)
+        assert completed is True
+
+        # Fetch details to check task event records
+        detail_res=await ac.get(f"/dashboard/tasks/{task_id}")
+        assert detail_res.status_code==200
+        html_content=detail_res.text
+        assert "TASK_CREATED" in html_content
+        assert "LEASE_ACQUIRED" in html_content
+        assert "TASK_STARTED" in html_content
+        assert "TASK_COMPLETED" in html_content
+
+@pytest.mark.anyio
+async def test_dashboard_metrics():
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        metrics_res=await ac.get("/dashboard/metrics")
+        assert metrics_res.status_code==200
+        assert "Total Tasks" in metrics_res.text
+        assert "Live Event Feed" in metrics_res.text

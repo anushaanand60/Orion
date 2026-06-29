@@ -1,0 +1,8 @@
+{% extends "layout.html" %}
+{% block content %}
+<div hx-get="/dashboard/metrics" hx-trigger="load, every 1s" hx-swap="innerHTML">
+    <div style="text-align: center; padding: 40px; color: var(--text-muted);">
+        Connecting to Orion Control Plane...
+    </div>
+</div>
+{% endblock %}

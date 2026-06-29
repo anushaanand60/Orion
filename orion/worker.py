@@ -5,11 +5,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from orion.config import settings
 from orion.database import async_session
-from orion.enums import TaskStatus
+from orion.enums import TaskStatus, TaskEventType
 from orion.exceptions import PermanentTaskError, RetryableTaskError
 from orion.models.task import Task
 from orion.queue import get_queue_name
 from orion.redis import redis
+from orion.events import record_event
 
 async def release_blocked_tasks(db, task_id:uuid.UUID):
     result=await db.execute(
@@ -28,12 +29,18 @@ async def release_blocked_tasks(db, task_id:uuid.UUID):
         if all_completed:
             print(f"Releasing child task {child.id} from blocked state")
             child.status=TaskStatus.PENDING
-            await db.commit()
+            await record_event(db, child.id, TaskEventType.TASK_UNBLOCKED)
             if child.scheduled_at is None:
+                await record_event(db, child.id, TaskEventType.TASK_ENQUEUED)
+                await db.commit()
                 await redis.rpush(get_queue_name(child.priority), str(child.id))
             elif child.scheduled_at<=now:
+                await record_event(db, child.id, TaskEventType.TASK_ENQUEUED)
+                await db.commit()
                 await redis.rpush(get_queue_name(child.priority), str(child.id))
             else:
+                await record_event(db, child.id, TaskEventType.TASK_SCHEDULED)
+                await db.commit()
                 await redis.zadd(settings.scheduled_queue_name, {str(child.id): child.scheduled_at.timestamp()})
 
 async def process_task(task_id:str):
@@ -45,6 +52,8 @@ async def process_task(task_id:str):
         task.status=TaskStatus.RUNNING
         task.worker_id=settings.worker_name
         task.lease_expires_at=datetime.now(timezone.utc)+timedelta(seconds=settings.worker_lease_seconds)
+        await record_event(db, task.id, TaskEventType.LEASE_ACQUIRED, worker_id=settings.worker_name)
+        await record_event(db, task.id, TaskEventType.TASK_STARTED, worker_id=settings.worker_name)
         await db.commit()
         try:
             if task.task_type=="echo":
@@ -71,6 +80,7 @@ async def process_task(task_id:str):
                 raise PermanentTaskError(f"Unknown task type: {task.task_type}")
             task.worker_id=None
             task.lease_expires_at=None
+            await record_event(db, task.id, TaskEventType.TASK_COMPLETED, worker_id=settings.worker_name)
             await db.commit()
             await release_blocked_tasks(db, task.id)
         except PermanentTaskError as e:
@@ -78,6 +88,8 @@ async def process_task(task_id:str):
             task.result={"error":str(e)}
             task.worker_id=None
             task.lease_expires_at=None
+            await record_event(db, task.id, TaskEventType.TASK_FAILED, worker_id=settings.worker_name, details={"error":str(e)})
+            await record_event(db, task.id, TaskEventType.DLQ_PUSHED, worker_id=settings.worker_name)
             await db.commit()
             await redis.rpush(settings.dead_letter_queue_name, str(task.id))
         except Exception as e:
@@ -86,6 +98,8 @@ async def process_task(task_id:str):
                 task.status=TaskStatus.PENDING
                 task.worker_id=None
                 task.lease_expires_at=None
+                await record_event(db, task.id, TaskEventType.RETRY_SCHEDULED, worker_id=settings.worker_name, details={"error":str(e),"retry_count":task.retry_count})
+                await record_event(db, task.id, TaskEventType.TASK_ENQUEUED, worker_id=settings.worker_name)
                 await db.commit()
                 await redis.rpush(get_queue_name(task.priority), str(task.id))
             else:
@@ -93,11 +107,22 @@ async def process_task(task_id:str):
                 task.result={"error":str(e)}
                 task.worker_id=None
                 task.lease_expires_at=None
+                await record_event(db, task.id, TaskEventType.TASK_FAILED, worker_id=settings.worker_name, details={"error":str(e)})
+                await record_event(db, task.id, TaskEventType.DLQ_PUSHED, worker_id=settings.worker_name)
                 await db.commit()
                 await redis.rpush(settings.dead_letter_queue_name, str(task.id))
 
+async def send_heartbeat():
+    while True:
+        try:
+            await redis.set(f"orion:worker:{settings.worker_name}:heartbeat", "alive", ex=5)
+        except Exception:
+            pass
+        await asyncio.sleep(1)
+
 async def main():
     print(f"Worker {settings.worker_name} starting...")
+    asyncio.create_task(send_heartbeat())
     while True:
         res=await redis.blpop([settings.high_queue_name, settings.default_queue_name, settings.low_queue_name], timeout=0)
         if res:

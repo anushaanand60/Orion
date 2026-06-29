@@ -7,6 +7,8 @@ from orion.database import async_session
 from orion.models.task import Task
 from orion.queue import get_queue_name
 from orion.redis import redis
+from orion.enums import TaskEventType
+from orion.events import record_event
 
 async def promote_ready_tasks():
     now=datetime.now(timezone.utc)
@@ -20,6 +22,9 @@ async def promote_ready_tasks():
             task=result.scalar_one_or_none()
             if task:
                 print(f"Promoting task {task.id} to queue {get_queue_name(task.priority)}")
+                await record_event(db, task.id, TaskEventType.TASK_PROMOTED)
+                await record_event(db, task.id, TaskEventType.TASK_ENQUEUED)
+                await db.commit()
                 await redis.rpush(get_queue_name(task.priority), str(task.id))
 
 async def main():
