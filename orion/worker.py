@@ -2,6 +2,7 @@ import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from orion.config import settings
 from orion.database import async_session
 from orion.enums import TaskStatus
@@ -9,6 +10,31 @@ from orion.exceptions import PermanentTaskError, RetryableTaskError
 from orion.models.task import Task
 from orion.queue import get_queue_name
 from orion.redis import redis
+
+async def release_blocked_tasks(db, task_id:uuid.UUID):
+    result=await db.execute(
+        select(Task)
+        .options(selectinload(Task.children).selectinload(Task.parents))
+        .where(Task.id==task_id)
+    )
+    completed_task=result.scalar_one_or_none()
+    if not completed_task:
+        return
+    now=datetime.now(timezone.utc)
+    for child in completed_task.children:
+        if child.status!=TaskStatus.BLOCKED:
+            continue
+        all_completed=all(parent.status==TaskStatus.COMPLETED for parent in child.parents)
+        if all_completed:
+            print(f"Releasing child task {child.id} from blocked state")
+            child.status=TaskStatus.PENDING
+            await db.commit()
+            if child.scheduled_at is None:
+                await redis.rpush(get_queue_name(child.priority), str(child.id))
+            elif child.scheduled_at<=now:
+                await redis.rpush(get_queue_name(child.priority), str(child.id))
+            else:
+                await redis.zadd(settings.scheduled_queue_name, {str(child.id): child.scheduled_at.timestamp()})
 
 async def process_task(task_id:str):
     async with async_session() as db:
@@ -46,6 +72,7 @@ async def process_task(task_id:str):
             task.worker_id=None
             task.lease_expires_at=None
             await db.commit()
+            await release_blocked_tasks(db, task.id)
         except PermanentTaskError as e:
             task.status=TaskStatus.FAILED
             task.result={"error":str(e)}

@@ -1,10 +1,17 @@
 import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional
-from sqlalchemy import DateTime, Enum as SQLEnum, JSON, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import DateTime, Enum as SQLEnum, JSON, func, Table, Column, ForeignKey
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from orion.models.base import Base
 from orion.enums import TaskStatus, TaskPriority
+
+task_dependencies=Table(
+    "task_dependencies",
+    Base.metadata,
+    Column("parent_task_id", ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True),
+    Column("child_task_id", ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True),
+)
 
 class Task(Base):
     __tablename__="tasks"
@@ -21,3 +28,22 @@ class Task(Base):
     scheduled_at:Mapped[Optional[datetime]]=mapped_column(DateTime(timezone=True), nullable=True)
     created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at:Mapped[datetime]=mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    parents:Mapped[list["Task"]]=relationship(
+        "Task",
+        secondary=task_dependencies,
+        primaryjoin="Task.id==task_dependencies.c.child_task_id",
+        secondaryjoin="Task.id==task_dependencies.c.parent_task_id",
+        back_populates="children",
+    )
+    children:Mapped[list["Task"]]=relationship(
+        "Task",
+        secondary=task_dependencies,
+        primaryjoin="Task.id==task_dependencies.c.parent_task_id",
+        secondaryjoin="Task.id==task_dependencies.c.child_task_id",
+        back_populates="parents",
+    )
+
+    @property
+    def dependencies(self) -> list[uuid.UUID]:
+        return [parent.id for parent in self.parents]

@@ -5,6 +5,7 @@ class TaskStatus(str, Enum):
     RUNNING="running"
     COMPLETED="completed"
     FAILED="failed"
+    BLOCKED="blocked"
 
 class TaskPriority(str, Enum):
     HIGH="high"

@@ -708,3 +708,281 @@ async def test_scheduler_only_promotes_ready_tasks():
         scheduled_tasks=await redis.zrange(settings.scheduled_queue_name, 0, -1)
         assert not_ready_id in scheduled_tasks
         assert ready_id not in scheduled_tasks
+
+@pytest.mark.anyio
+async def test_immediate_task_without_dependencies_executes():
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        res=await ac.post("/tasks", json={
+            "task_type":"echo",
+            "payload":{"foo":"bar"}
+        })
+        assert res.status_code==201
+        task_id=res.json()["id"]
+
+        completed=False
+        for _ in range(20):
+            get_res=await ac.get(f"/tasks/{task_id}")
+            if get_res.json()["status"]=="completed":
+                completed=True
+                break
+            await asyncio.sleep(0.1)
+        assert completed is True
+
+@pytest.mark.anyio
+async def test_child_task_blocked_while_parent_runs():
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        res_parent=await ac.post("/tasks", json={
+            "task_type":"slow_echo",
+            "payload":{"idx":1,"delay":5}
+        })
+        assert res_parent.status_code==201
+        parent_id=res_parent.json()["id"]
+
+        res_child=await ac.post("/tasks", json={
+            "task_type":"echo",
+            "payload":{"child":"data"},
+            "dependencies":[parent_id]
+        })
+        assert res_child.status_code==201
+        child_id=res_child.json()["id"]
+
+        for _ in range(10):
+            res=await ac.get(f"/tasks/{child_id}")
+            assert res.json()["status"]=="blocked"
+            await asyncio.sleep(0.1)
+
+        parent_completed=False
+        for _ in range(60):
+            get_res=await ac.get(f"/tasks/{parent_id}")
+            if get_res.json()["status"]=="completed":
+                parent_completed=True
+                break
+            await asyncio.sleep(0.1)
+        assert parent_completed is True
+
+        child_completed=False
+        for _ in range(20):
+            get_res=await ac.get(f"/tasks/{child_id}")
+            if get_res.json()["status"]=="completed":
+                child_completed=True
+                break
+            await asyncio.sleep(0.1)
+        assert child_completed is True
+
+@pytest.mark.anyio
+async def test_child_executes_after_parent_completes():
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        res_parent=await ac.post("/tasks", json={
+            "task_type":"echo",
+            "payload":{"parent":"data"}
+        })
+        assert res_parent.status_code==201
+        parent_id=res_parent.json()["id"]
+
+        res_child=await ac.post("/tasks", json={
+            "task_type":"echo",
+            "payload":{"child":"data"},
+            "dependencies":[parent_id]
+        })
+        assert res_child.status_code==201
+        child_id=res_child.json()["id"]
+
+        completed=False
+        for _ in range(30):
+            get_res=await ac.get(f"/tasks/{child_id}")
+            if get_res.json()["status"]=="completed":
+                completed=True
+                break
+            await asyncio.sleep(0.1)
+        assert completed is True
+
+@pytest.mark.anyio
+async def test_multiple_parent_dependencies():
+    from datetime import datetime, timezone, timedelta
+    from orion.scheduler import promote_ready_tasks
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        future_time=datetime.now(timezone.utc)+timedelta(seconds=3)
+        res_p1=await ac.post("/tasks", json={
+            "task_type":"echo",
+            "payload":{"idx":1},
+            "scheduled_at":future_time.isoformat()
+        })
+        assert res_p1.status_code==201
+        p1_id=res_p1.json()["id"]
+
+        res_p2=await ac.post("/tasks", json={
+            "task_type":"echo",
+            "payload":{"idx":2}
+        })
+        assert res_p2.status_code==201
+        p2_id=res_p2.json()["id"]
+
+        res_child=await ac.post("/tasks", json={
+            "task_type":"echo",
+            "payload":{"child":"data"},
+            "dependencies":[p1_id,p2_id]
+        })
+        assert res_child.status_code==201
+        child_id=res_child.json()["id"]
+
+        p2_completed=False
+        for _ in range(20):
+            get_res=await ac.get(f"/tasks/{p2_id}")
+            if get_res.json()["status"]=="completed":
+                p2_completed=True
+                break
+            await asyncio.sleep(0.1)
+        assert p2_completed is True
+
+        res_c=await ac.get(f"/tasks/{child_id}")
+        assert res_c.json()["status"]=="blocked"
+
+        await asyncio.sleep(3.2)
+        await promote_ready_tasks()
+
+        p1_completed=False
+        for _ in range(20):
+            get_res=await ac.get(f"/tasks/{p1_id}")
+            if get_res.json()["status"]=="completed":
+                p1_completed=True
+                break
+            await asyncio.sleep(0.1)
+        assert p1_completed is True
+
+        child_completed=False
+        for _ in range(20):
+            get_res=await ac.get(f"/tasks/{child_id}")
+            if get_res.json()["status"]=="completed":
+                child_completed=True
+                break
+            await asyncio.sleep(0.1)
+        assert child_completed is True
+
+@pytest.mark.anyio
+async def test_failed_parent_never_releases_child():
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        res_parent=await ac.post("/tasks", json={
+            "task_type":"sum",
+            "payload":{"numbers":"invalid"}
+        })
+        assert res_parent.status_code==201
+        parent_id=res_parent.json()["id"]
+
+        res_child=await ac.post("/tasks", json={
+            "task_type":"echo",
+            "payload":{"child":"never"},
+            "dependencies":[parent_id]
+        })
+        assert res_child.status_code==201
+        child_id=res_child.json()["id"]
+
+        parent_failed=False
+        for _ in range(20):
+            get_res=await ac.get(f"/tasks/{parent_id}")
+            if get_res.json()["status"]=="failed":
+                parent_failed=True
+                break
+            await asyncio.sleep(0.1)
+        assert parent_failed is True
+
+        for _ in range(10):
+            get_res=await ac.get(f"/tasks/{child_id}")
+            assert get_res.json()["status"]=="blocked"
+            await asyncio.sleep(0.1)
+
+@pytest.mark.anyio
+async def test_scheduled_child_remains_scheduled_after_dependencies_resolve():
+    from datetime import datetime, timezone, timedelta
+    from orion.scheduler import promote_ready_tasks
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        res_parent=await ac.post("/tasks", json={
+            "task_type":"echo",
+            "payload":{"parent":"data"}
+        })
+        assert res_parent.status_code==201
+        parent_id=res_parent.json()["id"]
+
+        future_time=datetime.now(timezone.utc)+timedelta(seconds=5)
+        res_child=await ac.post("/tasks", json={
+            "task_type":"echo",
+            "payload":{"child":"scheduled"},
+            "scheduled_at":future_time.isoformat(),
+            "dependencies":[parent_id]
+        })
+        assert res_child.status_code==201
+        child_id=res_child.json()["id"]
+
+        parent_completed=False
+        for _ in range(20):
+            get_res=await ac.get(f"/tasks/{parent_id}")
+            if get_res.json()["status"]=="completed":
+                parent_completed=True
+                break
+            await asyncio.sleep(0.1)
+        assert parent_completed is True
+
+        # Even though parent resolved, child has scheduled_at in the future so it must be pending
+        for _ in range(10):
+            get_res=await ac.get(f"/tasks/{child_id}")
+            assert get_res.json()["status"]=="pending"
+            await asyncio.sleep(0.1)
+
+        scheduled_tasks=await redis.zrange(settings.scheduled_queue_name, 0, -1)
+        assert child_id in scheduled_tasks
+
+@pytest.mark.anyio
+async def test_priority_preserved_when_child_released():
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        res_parent=await ac.post("/tasks", json={
+            "task_type":"slow_echo",
+            "payload":{"parent":"data","delay":2}
+        })
+        assert res_parent.status_code==201
+        parent_id=res_parent.json()["id"]
+
+        res_low=await ac.post("/tasks", json={
+            "task_type":"slow_echo",
+            "payload":{"low":"priority","delay":3},
+            "priority":"low",
+            "dependencies":[parent_id]
+        })
+        assert res_low.status_code==201
+        low_id=res_low.json()["id"]
+
+        res_high=await ac.post("/tasks", json={
+            "task_type":"echo",
+            "payload":{"high":"priority"},
+            "priority":"high",
+            "dependencies":[parent_id]
+        })
+        assert res_high.status_code==201
+        high_id=res_high.json()["id"]
+
+        # Wait for high task to finish
+        high_completed_while_low_pending=False
+        for _ in range(30):
+            high_res=await ac.get(f"/tasks/{high_id}")
+            high_data=high_res.json()
+            if high_data["status"]=="completed":
+                low_res=await ac.get(f"/tasks/{low_id}")
+                if low_res.json()["status"] in ["pending","running"]:
+                    high_completed_while_low_pending=True
+                break
+            await asyncio.sleep(0.1)
+        assert high_completed_while_low_pending is True
+
+        completed_low=False
+        for _ in range(40):
+            low_res=await ac.get(f"/tasks/{low_id}")
+            if low_res.json()["status"]=="completed":
+                completed_low=True
+                break
+            await asyncio.sleep(0.1)
+        assert completed_low is True
