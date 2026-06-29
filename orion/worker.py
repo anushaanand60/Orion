@@ -37,6 +37,9 @@ async def process_task(task_id:str):
                 else:
                     raise PermanentTaskError("Payload must contain a list of numbers under 'numbers' key")
             elif task.task_type=="fail":
+                delay=task.payload.get("delay", 0)
+                if delay>0:
+                    await asyncio.sleep(delay)
                 raise RetryableTaskError("Simulated failure")
             else:
                 raise PermanentTaskError(f"Unknown task type: {task.task_type}")
@@ -49,6 +52,7 @@ async def process_task(task_id:str):
             task.worker_id=None
             task.lease_expires_at=None
             await db.commit()
+            await redis.rpush(settings.dead_letter_queue_name, str(task.id))
         except Exception as e:
             task.retry_count+=1
             if task.retry_count<=task.max_retries:
@@ -63,6 +67,7 @@ async def process_task(task_id:str):
                 task.worker_id=None
                 task.lease_expires_at=None
                 await db.commit()
+                await redis.rpush(settings.dead_letter_queue_name, str(task.id))
 
 async def main():
     print(f"Worker {settings.worker_name} starting...")

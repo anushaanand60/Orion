@@ -17,6 +17,7 @@ def anyio_backend():
 @pytest.fixture(autouse=True)
 async def cleanup_connections():
     yield
+    await redis.delete(settings.dead_letter_queue_name)
     await engine.dispose()
     await redis.aclose()
     redis.connection_pool=ConnectionPool.from_url(settings.redis_url, decode_responses=True)
@@ -366,3 +367,175 @@ async def test_active_lease_not_recovered():
         task=result.scalar_one()
         assert task.status=="running"
         assert task.worker_id=="live-worker"
+
+@pytest.mark.anyio
+async def test_permanent_failure_sent_to_dlq():
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        res=await ac.post("/tasks", json={"task_type":"sum","payload":{"numbers":"bad"}})
+        assert res.status_code==201
+        task_id=res.json()["id"]
+
+        finished=False
+        for _ in range(20):
+            get_res=await ac.get(f"/tasks/{task_id}")
+            if get_res.json()["status"]=="failed":
+                finished=True
+                break
+            await asyncio.sleep(0.1)
+        assert finished is True
+
+        dlq_list=await redis.lrange(settings.dead_letter_queue_name, 0, -1)
+        assert task_id in dlq_list
+
+        dlq_res=await ac.get("/dead-letter")
+        assert dlq_res.status_code==200
+        dlq_tasks=dlq_res.json()
+        assert any(t["id"]==task_id for t in dlq_tasks)
+
+@pytest.mark.anyio
+async def test_retry_exhaustion_sent_to_dlq():
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        res=await ac.post("/tasks", json={"task_type":"fail","max_retries":2,"payload":{}})
+        assert res.status_code==201
+        task_id=res.json()["id"]
+
+        finished=False
+        for _ in range(30):
+            get_res=await ac.get(f"/tasks/{task_id}")
+            if get_res.json()["status"]=="failed":
+                finished=True
+                break
+            await asyncio.sleep(0.1)
+        assert finished is True
+
+        dlq_list=await redis.lrange(settings.dead_letter_queue_name, 0, -1)
+        assert task_id in dlq_list
+
+@pytest.mark.anyio
+async def test_successful_task_not_in_dlq():
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        res=await ac.post("/tasks", json={"task_type":"echo","payload":{"foo":"bar"}})
+        assert res.status_code==201
+        task_id=res.json()["id"]
+
+        finished=False
+        for _ in range(20):
+            get_res=await ac.get(f"/tasks/{task_id}")
+            if get_res.json()["status"]=="completed":
+                finished=True
+                break
+            await asyncio.sleep(0.1)
+        assert finished is True
+
+        dlq_list=await redis.lrange(settings.dead_letter_queue_name, 0, -1)
+        assert task_id not in dlq_list
+
+@pytest.mark.anyio
+async def test_recovered_task_not_in_dlq():
+    from datetime import datetime, timedelta, timezone
+    from orion.recovery import recover_expired_leases
+
+    task_id=uuid.uuid4()
+    async with async_session() as db:
+        task=Task(
+            id=task_id,
+            status="running",
+            task_type="echo",
+            payload={"test":"recovered-dlq"},
+            priority="default",
+            worker_id="dead-worker",
+            lease_expires_at=datetime.now(timezone.utc)-timedelta(seconds=60),
+        )
+        db.add(task)
+        await db.commit()
+
+    await recover_expired_leases()
+
+    completed=False
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        for _ in range(30):
+            get_res=await ac.get(f"/tasks/{task_id}")
+            if get_res.json()["status"]=="completed":
+                completed=True
+                break
+            await asyncio.sleep(0.2)
+    assert completed is True
+
+    dlq_list=await redis.lrange(settings.dead_letter_queue_name, 0, -1)
+    assert str(task_id) not in dlq_list
+
+@pytest.mark.anyio
+async def test_dlq_contains_only_terminal_failures():
+    from datetime import datetime, timedelta, timezone
+    from orion.recovery import recover_expired_leases
+
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        res_success=await ac.post("/tasks", json={"task_type":"echo","payload":{}})
+        assert res_success.status_code==201
+        success_id=res_success.json()["id"]
+
+        res_retryable=await ac.post("/tasks", json={"task_type":"fail","max_retries":5,"payload":{"delay":2}})
+        assert res_retryable.status_code==201
+        retryable_id=res_retryable.json()["id"]
+
+        res_permanent=await ac.post("/tasks", json={"task_type":"sum","payload":{"numbers":"bad"}})
+        assert res_permanent.status_code==201
+        permanent_id=res_permanent.json()["id"]
+
+        res_exhausted=await ac.post("/tasks", json={"task_type":"fail","max_retries":1,"payload":{}})
+        assert res_exhausted.status_code==201
+        exhausted_id=res_exhausted.json()["id"]
+
+        recovered_id=uuid.uuid4()
+        async with async_session() as db:
+            task=Task(
+                id=recovered_id,
+                status="running",
+                task_type="echo",
+                payload={"test":"policy"},
+                priority="default",
+                worker_id="dead-worker",
+                lease_expires_at=datetime.now(timezone.utc)-timedelta(seconds=60),
+            )
+            db.add(task)
+            await db.commit()
+
+        await recover_expired_leases()
+
+        done=False
+        for _ in range(40):
+            res_s=await ac.get(f"/tasks/{success_id}")
+            res_p=await ac.get(f"/tasks/{permanent_id}")
+            res_e=await ac.get(f"/tasks/{exhausted_id}")
+            res_r=await ac.get(f"/tasks/{recovered_id}")
+            res_ret=await ac.get(f"/tasks/{retryable_id}")
+
+            s_status=res_s.json()["status"]
+            p_status=res_p.json()["status"]
+            e_status=res_e.json()["status"]
+            r_status=res_r.json()["status"]
+            ret_data=res_ret.json()
+
+            if (s_status=="completed" and 
+                p_status=="failed" and 
+                e_status=="failed" and 
+                r_status=="completed" and 
+                ret_data["retry_count"]>=1):
+                done=True
+                break
+            await asyncio.sleep(0.2)
+        assert done is True
+
+        dlq_list=await redis.lrange(settings.dead_letter_queue_name, 0, -1)
+        
+        assert permanent_id in dlq_list
+        assert exhausted_id in dlq_list
+        
+        assert success_id not in dlq_list
+        assert retryable_id not in dlq_list
+        assert str(recovered_id) not in dlq_list
