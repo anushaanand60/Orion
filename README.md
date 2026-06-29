@@ -1,6 +1,6 @@
 # Orion - Distributed Workflow & Task Orchestration Platform
 
-Orion is a distributed task queue and workflow system built with Python, FastAPI, PostgreSQL, and Redis. It handles priority queues, scheduled tasks, task dependencies, worker recovery, retries, dead-letter queues, and includes a live dashboard.
+Orion is a distributed task queue and workflow orchestration platform built with Python, FastAPI, PostgreSQL, and Redis. It supports priority queues, delayed scheduling, dependency-aware workflows, lease-based worker recovery, retries, dead-letter queues and a real-time operations dashboard for monitoring task execution.
 
 ---
 
