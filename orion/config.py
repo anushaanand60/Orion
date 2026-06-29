@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     default_queue_name:str="orion:queue:default"
     low_queue_name:str="orion:queue:low"
     dead_letter_queue_name:str="orion:queue:dead_letter"
+    scheduled_queue_name:str="orion:queue:scheduled"
+    scheduler_poll_interval:int=1
     worker_name:str=socket.gethostname()
     worker_lease_seconds:int=30
     lease_recovery_interval:int=10

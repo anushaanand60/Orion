@@ -32,12 +32,16 @@ async def create_task(task_in:TaskCreate, db:AsyncSession=Depends(get_db)):
         payload=task_in.payload,
         max_retries=task_in.max_retries,
         priority=task_in.priority,
+        scheduled_at=task_in.scheduled_at,
         result=None
     )
     db.add(task)
     await db.commit()
     await db.refresh(task)
-    await redis.rpush(get_queue_name(task.priority), str(task.id))
+    if task.scheduled_at is None:
+        await redis.rpush(get_queue_name(task.priority), str(task.id))
+    else:
+        await redis.zadd(settings.scheduled_queue_name, {str(task.id): task.scheduled_at.timestamp()})
     return task
 
 @router.get("/tasks/{task_id}", response_model=TaskDetailResponse)

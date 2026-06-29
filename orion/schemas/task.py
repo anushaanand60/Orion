@@ -9,6 +9,7 @@ class TaskCreate(BaseModel):
     payload:Dict[str, Any]
     max_retries:Optional[int]=3
     priority:Optional[TaskPriority]=TaskPriority.DEFAULT
+    scheduled_at:Optional[datetime]=None
 
 class TaskResponse(BaseModel):
     id:uuid.UUID
@@ -22,5 +23,6 @@ class TaskDetailResponse(TaskResponse):
     result:Optional[Dict[str, Any]]
     retry_count:int
     max_retries:int
+    scheduled_at:Optional[datetime]
     created_at:datetime
     updated_at:datetime

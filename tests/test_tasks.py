@@ -17,7 +17,13 @@ def anyio_backend():
 @pytest.fixture(autouse=True)
 async def cleanup_connections():
     yield
-    await redis.delete(settings.dead_letter_queue_name)
+    await redis.delete(
+        settings.scheduled_queue_name,
+        settings.high_queue_name,
+        settings.default_queue_name,
+        settings.low_queue_name,
+        settings.dead_letter_queue_name
+    )
     await engine.dispose()
     await redis.aclose()
     redis.connection_pool=ConnectionPool.from_url(settings.redis_url, decode_responses=True)
@@ -539,3 +545,166 @@ async def test_dlq_contains_only_terminal_failures():
         assert success_id not in dlq_list
         assert retryable_id not in dlq_list
         assert str(recovered_id) not in dlq_list
+
+@pytest.mark.anyio
+async def test_immediate_task_executes_normally():
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        res=await ac.post("/tasks", json={"task_type":"echo","payload":{"immediate":"test"}})
+        assert res.status_code==201
+        task_id=res.json()["id"]
+
+        completed=False
+        for _ in range(20):
+            get_res=await ac.get(f"/tasks/{task_id}")
+            if get_res.json()["status"]=="completed":
+                completed=True
+                break
+            await asyncio.sleep(0.1)
+        assert completed is True
+
+@pytest.mark.anyio
+async def test_future_task_not_executed_early():
+    from datetime import datetime, timezone, timedelta
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        future_time=datetime.now(timezone.utc)+timedelta(seconds=5)
+        res=await ac.post("/tasks", json={
+            "task_type":"echo",
+            "payload":{"future":"test"},
+            "scheduled_at":future_time.isoformat()
+        })
+        assert res.status_code==201
+        task_id=res.json()["id"]
+
+        for _ in range(10):
+            get_res=await ac.get(f"/tasks/{task_id}")
+            assert get_res.json()["status"]=="pending"
+            await asyncio.sleep(0.1)
+
+        scheduled_tasks=await redis.zrange(settings.scheduled_queue_name, 0, -1)
+        assert task_id in scheduled_tasks
+
+        high_len=await redis.llen(settings.high_queue_name)
+        default_len=await redis.llen(settings.default_queue_name)
+        low_len=await redis.llen(settings.low_queue_name)
+        assert high_len+default_len+low_len==0
+
+@pytest.mark.anyio
+async def test_scheduler_promotes_ready_task():
+    from datetime import datetime, timezone, timedelta
+    from orion.scheduler import promote_ready_tasks
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        future_time=datetime.now(timezone.utc)+timedelta(seconds=1)
+        res=await ac.post("/tasks", json={
+            "task_type":"echo",
+            "payload":{"ready":"test"},
+            "scheduled_at":future_time.isoformat()
+        })
+        assert res.status_code==201
+        task_id=res.json()["id"]
+
+        await asyncio.sleep(1.2)
+        await promote_ready_tasks()
+
+        completed=False
+        for _ in range(20):
+            get_res=await ac.get(f"/tasks/{task_id}")
+            if get_res.json()["status"]=="completed":
+                completed=True
+                break
+            await asyncio.sleep(0.1)
+        assert completed is True
+
+@pytest.mark.anyio
+async def test_priority_preserved_after_scheduling():
+    from datetime import datetime, timezone, timedelta
+    from orion.scheduler import promote_ready_tasks
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        future_time=datetime.now(timezone.utc)+timedelta(seconds=1)
+        res_low=await ac.post("/tasks", json={
+            "task_type":"slow_echo",
+            "payload":{"low":"priority","delay":3},
+            "priority":"low",
+            "scheduled_at":future_time.isoformat()
+        })
+        assert res_low.status_code==201
+        low_id=res_low.json()["id"]
+
+        res_high=await ac.post("/tasks", json={
+            "task_type":"echo",
+            "payload":{"high":"priority"},
+            "priority":"high",
+            "scheduled_at":future_time.isoformat()
+        })
+        assert res_high.status_code==201
+        high_id=res_high.json()["id"]
+
+        await asyncio.sleep(1.2)
+        await promote_ready_tasks()
+
+        high_completed_while_low_pending=False
+        for _ in range(30):
+            high_res=await ac.get(f"/tasks/{high_id}")
+            high_data=high_res.json()
+            if high_data["status"]=="completed":
+                low_res=await ac.get(f"/tasks/{low_id}")
+                if low_res.json()["status"] in ["pending","running"]:
+                    high_completed_while_low_pending=True
+                break
+            await asyncio.sleep(0.1)
+        assert high_completed_while_low_pending is True
+
+        completed_low=False
+        for _ in range(40):
+            low_res=await ac.get(f"/tasks/{low_id}")
+            if low_res.json()["status"]=="completed":
+                completed_low=True
+                break
+            await asyncio.sleep(0.1)
+        assert completed_low is True
+
+@pytest.mark.anyio
+async def test_scheduler_only_promotes_ready_tasks():
+    from datetime import datetime, timezone, timedelta
+    from orion.scheduler import promote_ready_tasks
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        future_time_ready=datetime.now(timezone.utc)+timedelta(seconds=1)
+        res_ready=await ac.post("/tasks", json={
+            "task_type":"echo",
+            "payload":{"ready":"only"},
+            "scheduled_at":future_time_ready.isoformat()
+        })
+        assert res_ready.status_code==201
+        ready_id=res_ready.json()["id"]
+
+        future_time_not_ready=datetime.now(timezone.utc)+timedelta(seconds=10)
+        res_not_ready=await ac.post("/tasks", json={
+            "task_type":"echo",
+            "payload":{"not":"ready"},
+            "scheduled_at":future_time_not_ready.isoformat()
+        })
+        assert res_not_ready.status_code==201
+        not_ready_id=res_not_ready.json()["id"]
+
+        await asyncio.sleep(1.2)
+        await promote_ready_tasks()
+
+        completed=False
+        for _ in range(20):
+            get_res=await ac.get(f"/tasks/{ready_id}")
+            if get_res.json()["status"]=="completed":
+                completed=True
+                break
+            await asyncio.sleep(0.1)
+        assert completed is True
+
+        get_res_not_ready=await ac.get(f"/tasks/{not_ready_id}")
+        assert get_res_not_ready.json()["status"]=="pending"
+
+        scheduled_tasks=await redis.zrange(settings.scheduled_queue_name, 0, -1)
+        assert not_ready_id in scheduled_tasks
+        assert ready_id not in scheduled_tasks
