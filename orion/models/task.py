@@ -16,5 +16,7 @@ class Task(Base):
     max_retries:Mapped[int]=mapped_column(default=3, server_default="3")
     payload:Mapped[Dict[str, Any]]=mapped_column(type_=JSON)
     result:Mapped[Optional[Dict[str, Any]]]=mapped_column(type_=JSON, nullable=True)
+    worker_id:Mapped[Optional[str]]=mapped_column(nullable=True)
+    lease_expires_at:Mapped[Optional[datetime]]=mapped_column(DateTime(timezone=True), nullable=True)
     created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at:Mapped[datetime]=mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

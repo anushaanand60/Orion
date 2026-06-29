@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from orion.config import settings
 from orion.database import async_session
@@ -16,6 +17,8 @@ async def process_task(task_id:str):
         if not task:
             return
         task.status=TaskStatus.RUNNING
+        task.worker_id=settings.worker_name
+        task.lease_expires_at=datetime.now(timezone.utc)+timedelta(seconds=settings.worker_lease_seconds)
         await db.commit()
         try:
             if task.task_type=="echo":
@@ -37,20 +40,28 @@ async def process_task(task_id:str):
                 raise RetryableTaskError("Simulated failure")
             else:
                 raise PermanentTaskError(f"Unknown task type: {task.task_type}")
+            task.worker_id=None
+            task.lease_expires_at=None
             await db.commit()
         except PermanentTaskError as e:
             task.status=TaskStatus.FAILED
             task.result={"error":str(e)}
+            task.worker_id=None
+            task.lease_expires_at=None
             await db.commit()
         except Exception as e:
             task.retry_count+=1
             if task.retry_count<=task.max_retries:
                 task.status=TaskStatus.PENDING
+                task.worker_id=None
+                task.lease_expires_at=None
                 await db.commit()
                 await redis.rpush(get_queue_name(task.priority), str(task.id))
             else:
                 task.status=TaskStatus.FAILED
                 task.result={"error":str(e)}
+                task.worker_id=None
+                task.lease_expires_at=None
                 await db.commit()
 
 async def main():

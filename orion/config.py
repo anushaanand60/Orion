@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     default_queue_name:str="orion:queue:default"
     low_queue_name:str="orion:queue:low"
     worker_name:str=socket.gethostname()
+    worker_lease_seconds:int=30
+    lease_recovery_interval:int=10
     model_config=SettingsConfigDict(env_file=".env")
 
 settings=Settings()

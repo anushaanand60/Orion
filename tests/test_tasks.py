@@ -274,3 +274,95 @@ async def test_priority_queue_scheduling():
                 break
             await asyncio.sleep(0.5)
         assert all_tasks_done is True
+
+@pytest.mark.anyio
+async def test_expired_lease_recovery():
+    from datetime import datetime, timedelta, timezone
+    from orion.recovery import recover_expired_leases
+
+    task_id=uuid.uuid4()
+    async with async_session() as db:
+        task=Task(
+            id=task_id,
+            status="running",
+            task_type="echo",
+            payload={"test":"recovery"},
+            priority="default",
+            worker_id="dead-worker",
+            lease_expires_at=datetime.now(timezone.utc)-timedelta(seconds=60),
+        )
+        db.add(task)
+        await db.commit()
+
+    await recover_expired_leases()
+
+    async with async_session() as db:
+        result=await db.execute(select(Task).where(Task.id==task_id))
+        task=result.scalar_one()
+        assert task.status=="pending"
+        assert task.worker_id is None
+        assert task.lease_expires_at is None
+
+    completed=False
+    transport=ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        for _ in range(30):
+            get_res=await ac.get(f"/tasks/{task_id}")
+            if get_res.json()["status"]=="completed":
+                completed=True
+                break
+            await asyncio.sleep(0.2)
+    assert completed is True
+
+@pytest.mark.anyio
+async def test_completed_tasks_not_recovered():
+    from datetime import datetime, timezone
+    from orion.recovery import recover_expired_leases
+
+    task_id=uuid.uuid4()
+    async with async_session() as db:
+        task=Task(
+            id=task_id,
+            status="completed",
+            task_type="echo",
+            payload={"test":"completed"},
+            result={"test":"completed"},
+            worker_id=None,
+            lease_expires_at=None,
+        )
+        db.add(task)
+        await db.commit()
+
+    await recover_expired_leases()
+
+    async with async_session() as db:
+        result=await db.execute(select(Task).where(Task.id==task_id))
+        task=result.scalar_one()
+        assert task.status=="completed"
+
+@pytest.mark.anyio
+async def test_active_lease_not_recovered():
+    from datetime import datetime, timedelta, timezone
+    from orion.recovery import recover_expired_leases
+
+    task_id=uuid.uuid4()
+    future_lease=datetime.now(timezone.utc)+timedelta(minutes=5)
+    async with async_session() as db:
+        task=Task(
+            id=task_id,
+            status="running",
+            task_type="echo",
+            payload={"test":"active"},
+            worker_id="live-worker",
+            lease_expires_at=future_lease,
+        )
+        db.add(task)
+        await db.commit()
+
+    await recover_expired_leases()
+
+    async with async_session() as db:
+        result=await db.execute(select(Task).where(Task.id==task_id))
+        task=result.scalar_one()
+        assert task.status=="running"
+        assert task.worker_id=="live-worker"
